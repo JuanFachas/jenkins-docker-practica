@@ -1,6 +1,7 @@
 pipeline {
     agent any
 
+    /* ─────────────── PARAMETROS ─────────────── */
     parameters {
         string(name: 'NAME_CONTAINER', defaultValue: 'proyecto-qa',  description: 'Nombre fijo del contenedor')
         string(name: 'IMAGE_NAME',     defaultValue: 'iproyecto-qa', description: 'Nombre de la imagen')
@@ -9,21 +10,22 @@ pipeline {
         booleanParam(name: 'REBUILD_IMAGE', defaultValue: true, description: 'Forzar rebuild de la imagen')
     }
 
+    /* ─────────────── VARIABLES ─────────────── */
     environment {
         FULL_IMAGE = "${params.IMAGE_NAME}:${params.IMAGE_TAG}"
     }
 
     stages {
 
+        /* ── 1. Estado del contenedor ── */
         stage('Check container status') {
             steps {
                 script {
-                    // status = running | exited | none
                     env.CT_STATUS = sh(
                         script: '''
-                          if docker ps --format '{{.Names}}' | grep -w "^${NAME_CONTAINER}$" ; then
+                          if docker ps --format '{{.Names}}' | grep -q -w "^${NAME_CONTAINER}$"; then
                               echo running
-                          elif docker ps -a --format '{{.Names}}' | grep -w "^${NAME_CONTAINER}$" ; then
+                          elif docker ps -a --format '{{.Names}}' | grep -q -w "^${NAME_CONTAINER}$"; then
                               echo exited
                           else
                               echo none
@@ -36,6 +38,7 @@ pipeline {
             }
         }
 
+        /* ── 2. Build imagen si hace falta ── */
         stage('Build image (if needed)') {
             when {
                 anyOf {
@@ -48,16 +51,34 @@ pipeline {
             }
         }
 
+        /* ── 3. Verificar puerto ── */
+        stage('Ensure free port') {
+            steps {
+                sh """
+                  echo "Verificando si el puerto ${params.PORT} está en uso…"
+                  PORT_USED=\$(docker ps --format '{{.ID}} {{.Names}} {{.Ports}}' | grep '0.0.0.0:${params.PORT}->' | awk '{print \$1}')
+                  if [ -n "\$PORT_USED" ]; then
+                      echo "Puerto ${params.PORT} ocupado por contenedor \$PORT_USED. Deteniéndolo…"
+                      docker stop \$PORT_USED || true
+                      docker rm   \$PORT_USED || true
+                  else
+                      echo "Puerto ${params.PORT} libre."
+                  fi
+                """
+            }
+        }
+
+        /* ── 4. Arrancar o crear ── */
         stage('Start or Run container') {
             steps {
                 script {
                     if (env.CT_STATUS == 'running') {
-                        echo "Contenedor ya en ejecución — nada que hacer."
+                        echo "✔️  Contenedor ya en ejecución — nada que hacer."
                     } else if (env.CT_STATUS == 'exited') {
-                        echo "Contenedor existente pero detenido — arrancándolo…"
+                        echo "⚡ Contenedor detenido — arrancándolo…"
                         sh "docker start ${params.NAME_CONTAINER}"
                     } else {
-                        echo "Contenedor no existe — creándolo…"
+                        echo "➕ Contenedor no existe — creándolo…"
                         sh "docker run -dp ${params.PORT}:80 --name ${params.NAME_CONTAINER} ${env.FULL_IMAGE}"
                     }
                 }
