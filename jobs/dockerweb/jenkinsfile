@@ -1,21 +1,42 @@
 pipeline {
     agent any
 
-    /* ─────────────── PARAMETROS ─────────────── */
+    /* ──────────────── PARÁMETROS ──────────────── */
     parameters {
-        string(name: 'NAME_CONTAINER', defaultValue: 'proyecto-qa',  description: 'Nombre fijo del contenedor')
-        string(name: 'IMAGE_NAME',     defaultValue: 'iproyecto-qa', description: 'Nombre de la imagen')
-        string(name: 'IMAGE_TAG',      defaultValue: 'latest',       description: 'Tag de la imagen')
-        string(name: 'PORT',           defaultValue: '81',           description: 'Puerto host → 80 contenedor')
-        booleanParam(name: 'REBUILD_IMAGE', defaultValue: true, description: 'Forzar rebuild de la imagen')
+        string(name: 'NAME_CONTAINER', defaultValue: 'proyecto-qa',
+               description: 'Prefijo / nombre fijo del contenedor')
+        string(name: 'IMAGE_NAME',     defaultValue: 'iproyecto-qa',
+               description: 'Nombre base de la imagen')
+        string(name: 'IMAGE_TAG',      defaultValue: 'latest',
+               description: 'Tag de la imagen')
+        string(name: 'PORT',           defaultValue: '81',
+               description: 'Puerto host → 80 contenedor')
+        booleanParam(name: 'REBUILD_IMAGE', defaultValue: true,
+               description: 'Forzar rebuild de la imagen (true/false)')
     }
 
-    /* ─────────────── VARIABLES ─────────────── */
+    /* ──────────────── VARIABLES ──────────────── */
     environment {
         FULL_IMAGE = "${params.IMAGE_NAME}:${params.IMAGE_TAG}"
     }
 
     stages {
+
+        /* ── 0. Purga de contenedores obsoletos ── */
+        stage('Purge old containers') {
+            steps {
+                sh '''
+                  echo "🔄  Buscando contenedores que empiecen con ${NAME_CONTAINER}…"
+                  OLD=$(docker ps -a --format '{{.ID}} {{.Names}}' | awk '$2 ~ /^'"${NAME_CONTAINER}"'/ {print $1}')
+                  if [ -n "$OLD" ]; then
+                      echo "Encontrados contenedores antiguos: $OLD — eliminándolos..."
+                      docker rm -f $OLD || true
+                  else
+                      echo "No hay contenedores antiguos que purgar."
+                  fi
+                '''
+            }
+        }
 
         /* ── 1. Estado del contenedor ── */
         stage('Check container status') {
@@ -33,7 +54,7 @@ pipeline {
                         ''',
                         returnStdout: true
                     ).trim()
-                    echo "Estado del contenedor: ${env.CT_STATUS}"
+                    echo "📄  Estado del contenedor: ${env.CT_STATUS}"
                 }
             }
         }
@@ -47,38 +68,39 @@ pipeline {
                 }
             }
             steps {
+                echo "🏗️  Construyendo imagen ${env.FULL_IMAGE}…"
                 sh "docker build jobs/dockerweb/ -t ${env.FULL_IMAGE}"
             }
         }
 
-        /* ── 3. Verificar puerto ── */
+        /* ── 3. Verificar / liberar puerto ── */
         stage('Ensure free port') {
             steps {
                 sh """
-                  echo "Verificando si el puerto ${params.PORT} está en uso…"
-                  PORT_USED=\$(docker ps --format '{{.ID}} {{.Names}} {{.Ports}}' | grep '0.0.0.0:${params.PORT}->' | awk '{print \$1}')
+                  echo "🔎  Verificando si el puerto ${params.PORT} está ocupado…"
+                  PORT_USED=\$(docker ps --format '{{.ID}} {{.Ports}}' | grep '0.0.0.0:${params.PORT}->' | awk '{print \$1}')
                   if [ -n "\$PORT_USED" ]; then
-                      echo "Puerto ${params.PORT} ocupado por contenedor \$PORT_USED. Deteniéndolo…"
+                      echo "⚠️  Puerto ${params.PORT} ocupado por contenedor \$PORT_USED — liberándolo."
                       docker stop \$PORT_USED || true
                       docker rm   \$PORT_USED || true
                   else
-                      echo "Puerto ${params.PORT} libre."
+                      echo "✅  Puerto ${params.PORT} libre."
                   fi
                 """
             }
         }
 
-        /* ── 4. Arrancar o crear ── */
+        /* ── 4. Arrancar o crear contenedor ── */
         stage('Start or Run container') {
             steps {
                 script {
                     if (env.CT_STATUS == 'running') {
-                        echo "✔️  Contenedor ya en ejecución — nada que hacer."
+                        echo "✔️  Contenedor ya en ejecución — no se realiza ninguna acción."
                     } else if (env.CT_STATUS == 'exited') {
                         echo "⚡ Contenedor detenido — arrancándolo…"
                         sh "docker start ${params.NAME_CONTAINER}"
                     } else {
-                        echo "➕ Contenedor no existe — creándolo…"
+                        echo "➕ Creando y ejecutando contenedor nuevo…"
                         sh "docker run -dp ${params.PORT}:80 --name ${params.NAME_CONTAINER} ${env.FULL_IMAGE}"
                     }
                 }
@@ -86,3 +108,4 @@ pipeline {
         }
     }
 }
+
