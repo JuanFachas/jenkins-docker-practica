@@ -2,44 +2,65 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'name_container', defaultValue: 'proyecto-qa',  description: 'nombre del docker')
-        string(name: 'name_imagen',    defaultValue: 'iproyecto-qa', description: 'nombre de la imagen')
-        string(name: 'tag_imagen',     defaultValue: 'latest',       description: 'etiqueta de la imagen')
-        string(name: 'puerto_imagen',  defaultValue: '81',           description: 'puerto a publicar')
+        string(name: 'NAME_CONTAINER', defaultValue: 'proyecto-qa',  description: 'Nombre fijo del contenedor')
+        string(name: 'IMAGE_NAME',     defaultValue: 'iproyecto-qa', description: 'Nombre de la imagen')
+        string(name: 'IMAGE_TAG',      defaultValue: 'latest',       description: 'Tag de la imagen')
+        string(name: 'PORT',           defaultValue: '81',           description: 'Puerto host → 80 contenedor')
+        booleanParam(name: 'REBUILD_IMAGE', defaultValue: true, description: 'Forzar rebuild de la imagen')
     }
 
     environment {
-        NAME_FINAL = "${params.name_container}-${params.tag_imagen}-${params.puerto_imagen}"
-        IMAGE_TAG  = "${params.name_imagen}:${params.tag_imagen}"
+        FULL_IMAGE = "${params.IMAGE_NAME}:${params.IMAGE_TAG}"
     }
 
     stages {
 
-        stage('stop/rm') {
+        stage('Check container status') {
             steps {
-                sh '''
-                  #!/bin/bash
-                  set +e
-                  if docker ps -a --format '{{.Names}}' | grep -w "^${NAME_FINAL}$" >/dev/null; then
-                      echo "Contenedor ${NAME_FINAL} encontrado. Deteniendo y eliminando..."
-                      docker stop ${NAME_FINAL} || true
-                      docker rm   ${NAME_FINAL} || true
-                  else
-                      echo "No existe contenedor ${NAME_FINAL}"
-                  fi
-                '''
+                script {
+                    // status = running | exited | none
+                    env.CT_STATUS = sh(
+                        script: '''
+                          if docker ps --format '{{.Names}}' | grep -w "^${NAME_CONTAINER}$" ; then
+                              echo running
+                          elif docker ps -a --format '{{.Names}}' | grep -w "^${NAME_CONTAINER}$" ; then
+                              echo exited
+                          else
+                              echo none
+                          fi
+                        ''',
+                        returnStdout: true
+                    ).trim()
+                    echo "Estado del contenedor: ${env.CT_STATUS}"
+                }
             }
         }
 
-        stage('build image') {
+        stage('Build image (if needed)') {
+            when {
+                anyOf {
+                    expression { params.REBUILD_IMAGE }
+                    expression { env.CT_STATUS == 'none' }
+                }
+            }
             steps {
-                sh "docker build jobs/dockerweb/ -t ${IMAGE_TAG}"
+                sh "docker build jobs/dockerweb/ -t ${env.FULL_IMAGE}"
             }
         }
 
-        stage('run container') {
+        stage('Start or Run container') {
             steps {
-                sh "docker run -dp ${params.puerto_imagen}:80 --name ${NAME_FINAL} ${IMAGE_TAG}"
+                script {
+                    if (env.CT_STATUS == 'running') {
+                        echo "Contenedor ya en ejecución — nada que hacer."
+                    } else if (env.CT_STATUS == 'exited') {
+                        echo "Contenedor existente pero detenido — arrancándolo…"
+                        sh "docker start ${params.NAME_CONTAINER}"
+                    } else {
+                        echo "Contenedor no existe — creándolo…"
+                        sh "docker run -dp ${params.PORT}:80 --name ${params.NAME_CONTAINER} ${env.FULL_IMAGE}"
+                    }
+                }
             }
         }
     }
