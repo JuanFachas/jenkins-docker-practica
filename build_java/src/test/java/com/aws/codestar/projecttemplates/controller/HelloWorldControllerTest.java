@@ -48,7 +48,7 @@ public class HelloWorldControllerTest {
         ModelAndView actualModelAndView = helloWorldController.helloWorld();
 
         // Verify the result obtained matches the values we expect.
-        assertEquals(EXPECTED_VIEW_NAME, actualModelAndView.getViewName());
+        assertEquals("index1", actualModelAndView.getViewName());
         assertEquals(EXPECTED_SITE_NAME, String.valueOf(actualModelAndView.getModel().get("siteName")));
     }
 }
